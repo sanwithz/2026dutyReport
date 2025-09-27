@@ -198,17 +198,11 @@
                             "align": "center",
                             "flex": 2
                         }, {
-                            "type": "box",
-                            "layout": "vertical",
-                            "flex": 2,
-                            "contents": [{
-                                "type": "image",
-                                "url": "https://upload.wikimedia.org/wikipedia/commons/thumb/3/3e/%E0%B8%A5%E0%B8%B2%E0%B8%A2%E0%B9%80%E0%B8%8B%E0%B9%87%E0%B8%99_%E0%B8%8A%E0%B8%B1%E0%B8%A2_%E0%B8%8A%E0%B8%B4%E0%B8%94%E0%B8%8A%E0%B8%AD%E0%B8%9A.svg/200px-%E0%B8%A5%E0%B8%B2%E0%B8%A2%E0%B9%80%E0%B8%8B%E0%B9%87%E0%B8%99_%E0%B8%8A%E0%B8%B1%E0%B8%A2_%E0%B8%8A%E0%B8%B4%E0%B8%94%E0%B8%8A%E0%B8%AD%E0%B8%9A.svg.png",
-                                "size": "xxs",
-                                "align": "center",
-                                "aspectMode": "fit",
-                                "aspectRatio": "2:1"
-                            }]
+                            "type": "text",
+                            "text": "-",
+                            "size": "sm",
+                            "align": "center",
+                            "flex": 2
                         }, {
                             "type": "text",
                             "text": "-",
@@ -244,7 +238,7 @@
                             "flex": 2
                         }, {
                             "type": "text",
-                            "text": "ไปราชการ",
+                            "text": "-",
                             "size": "sm",
                             "align": "center",
                             "flex": 2
@@ -353,6 +347,60 @@
                         text: 'Could not initialize LIFF. Some features may not work.'
                     });
                 });
+
+            // --- DATA FETCHING ---
+            function fetchReportData() {
+                $.LoadingOverlay("show");
+                fetch(APP_SCRIPT_URL)
+                    .then(response => response.json())
+                    .then(sheetData => {
+                        // Get the latest entry for each teacher
+                        const latestEntries = {};
+                        sheetData.forEach(row => {
+                            if(row["Teacher Name"]) {
+                                latestEntries[row["Teacher Name"]] = row;
+                            }
+                        });
+
+                        // Update flexMessageData in place
+                        flexMessageData.body.contents.forEach(contentItem => {
+                            if (contentItem.type === 'box' && contentItem.layout === 'horizontal' && contentItem.contents[0].type === 'text') {
+                                const teacherName = contentItem.contents[0].text;
+                                const latestEntry = latestEntries[teacherName];
+
+                                if (latestEntry) {
+                                    // Update signature
+                                    const signatureUrl = latestEntry["Signature URL"];
+                                    let signatureObject;
+                                    if (signatureUrl && signatureUrl.startsWith('http')) {
+                                        signatureObject = {
+                                            "type": "box", "layout": "vertical", "flex": 2,
+                                            "contents": [{
+                                                "type": "image", "url": signatureUrl,
+                                                "size": "xxs", "align": "center", "aspectMode": "fit", "aspectRatio": "2:1"
+                                            }]
+                                        };
+                                    } else {
+                                        signatureObject = { "type": "text", "text": signatureUrl || "-", "size": "sm", "align": "center", "flex": 2 };
+                                    }
+                                    contentItem.contents[2] = signatureObject;
+                                    
+                                    // Update notes
+                                    contentItem.contents[3].text = latestEntry["Notes"] || "-";
+                                }
+                            }
+                        });
+                        
+                        renderReport();
+                        $.LoadingOverlay("hide");
+                    })
+                    .catch(error => {
+                        console.error('Error fetching report data:', error);
+                        Swal.fire('Fetch Error', 'Could not load the latest report data.', 'error');
+                        $.LoadingOverlay("hide");
+                        renderReport(); // Render with default data on error
+                    });
+            }
 
             // --- UI RENDERING ---
             function renderReport() {
@@ -535,33 +583,76 @@
             // Share to LINE
             $('#share-line-btn').on('click', function() {
                 if (!liff.isInClient()) {
-                     Swal.fire('Not in LINE', 'Please open this page in the LINE app to share.', 'info');
-                     return;
+                    Swal.fire('Not in LINE', 'Please open this page in the LINE app to share.', 'info');
+                    return;
                 }
-                 if (!liff.isApiAvailable('shareTargetPicker')) {
+                if (!liff.isApiAvailable('shareTargetPicker')) {
                     Swal.fire('Unsupported', 'Share Target Picker is not available in your LINE version.', 'warning');
                     return;
                 }
+
+                // IMPORTANT: Before sharing, ensure all image URLs are public HTTPS URLs.
+                // Data URLs from signatures will not work when shared. Save the report first.
+                const hasDataUrl = JSON.stringify(flexMessageData).includes('data:image');
+                if (hasDataUrl) {
+                    Swal.fire('Unsaved Signatures', 'Please save the report to upload signatures before sharing.', 'warning');
+                    return;
+                }
+
+                // Dynamically build the flex message body from the current data
+                const shareableFlex = JSON.parse(JSON.stringify(flexMessageData)); // Deep copy
                 
-                // IMPORTANT: Before sharing, ensure all image URLs in flexMessageData are public HTTPS URLs.
-                // You should replace data URLs with the Drive URLs after saving the report.
+                const newBodyContents = [];
+                // Add header row
+                newBodyContents.push({
+                    "type": "box", "layout": "horizontal", "spacing": "md", "paddingAll": "8px",
+                    "contents": [
+                        { "type": "text", "text": "รายชื่อครูเวร", "size": "sm", "weight": "bold", "align": "center", "flex": 3 },
+                        { "type": "text", "text": "ประทับเวลา", "size": "sm", "weight": "bold", "align": "center", "flex": 2 },
+                        { "type": "text", "text": "ลายเซ็น", "size": "sm", "weight": "bold", "align": "center", "flex": 2 },
+                        { "type": "text", "text": "หมายเหตุ", "size": "sm", "weight": "bold", "align": "center", "flex": 2 }
+                    ]
+                });
+
+                const dataRows = flexMessageData.body.contents.filter(item => item.type === 'box' && item.layout === 'horizontal');
+                dataRows.forEach((row, index) => {
+                    if (index === 0) return; // Skip original header
+
+                    newBodyContents.push({ "type": "separator", "margin": "md" });
+                    
+                    const newRow = JSON.parse(JSON.stringify(row)); // Deep copy row
+                    newBodyContents.push(newRow);
+                });
                 
-                liff.shareTargetPicker([{
+                shareableFlex.body.contents = newBodyContents;
+
+                const flexMessage = {
                     'type': 'flex',
                     'altText': 'รายงานการปฏิบัติหน้าที่เวร',
-                    'contents': flexMessageData
-                }])
-                .then(() => {
-                    Swal.fire('Sent!', 'The report has been sent.', 'success');
-                })
-                .catch(function(res) {
-                    Swal.fire('Send Error', 'Could not send the report. Please try again.', 'error');
-                });
+                    'contents': shareableFlex
+                };
+
+                console.log(JSON.stringify(flexMessage)); // Debug log
+
+                liff.shareTargetPicker([flexMessage])
+                  .then((result) => {
+                    if (result) {
+                      Swal.fire('Success', 'Attendance summary shared successfully!', 'success');
+                    } else {
+                      Swal.fire('Info', 'ShareTargetPicker was closed without sending the message', 'info');
+                    }
+                    liff.closeWindow();
+                  })
+                  .catch((error) => {
+                    console.error('Error sharing attendance summary: ', error);
+                    Swal.fire('Error', 'Error sharing attendance summary: ' + error.message, 'error');
+                  });
             });
+
 
             // Save Report to Google Sheet
             $('#save-report-btn').on('click', function() {
-                if (!APP_SCRIPT_URL || APP_SCRIPT_URL === "YOUR_APP_SCRIPT_WEB_APP_URL") {
+                if (!APP_SCRIPT_URL) {
                     Swal.fire('Configuration Error', 'Please set the APP_SCRIPT_URL variable in the script.', 'error');
                     return;
                 }
@@ -611,10 +702,12 @@
                 })
                 .then(response => response.json())
                 .then(data => {
-                    $.LoadingOverlay("hide");
                     if (data.status === 'success') {
-                        Swal.fire('Success', data.message, 'success');
-                        // Optionally, you can re-fetch data or update UI with returned Drive URLs
+                        Swal.fire('Success', data.message, 'success')
+                            .then(() => {
+                                // Fetch the latest data to get public URLs for signatures
+                                fetchReportData();
+                            });
                     } else {
                         throw new Error(data.message);
                     }
@@ -626,8 +719,9 @@
                 });
             });
 
-            // --- INITIAL RENDER ---
-            renderReport();
+            // --- INITIAL LOAD ---
+            fetchReportData();
+
         });
     </script>
 
